@@ -64,23 +64,54 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 			.map(({ label, link }) => [label, link] as [string, string]);
 
 	const extractImages = (body:string, url:string, maxImages:number, searchTerms?:string[]) =>
-		[...body.matchAll(/<img(\s+[^>]*)/g)]
+		// FIX 1: Use [\s\S] instead of . to match across newlines in attribute blocks,
+		// and make the img tag match more robust by capturing everything up to the closing >
+		[...body.matchAll(/<img\b([^>]*?)(?:\/?>)/gi)]
 			.filter(x => x[1])
 			.map(([, attributes], index) => {
-				const alt = attributes.match(/\salt="([^"]+)"/)?.[1] || "";
-				const src = attributes.match(/\ssrc="([^"]+)"/)?.[1];
+				// FIX 2: Match alt= with any whitespace (including none) before it,
+				// and support both single and double quoted attribute values
+				const alt = attributes.match(/[\s]alt=["']([^"']+)["']/i)?.[1]
+					|| attributes.match(/^alt=["']([^"']+)["']/i)?.[1]
+					|| "";
+
+				// FIX 3: Support both double and single quoted src, and allow src to be
+				// the first attribute (no leading whitespace required via alternation)
+				const srcMatch = attributes.match(/(?:^|\s)src=["']([^"']+)["']/i)?.[1]
+					// Also handle data-src for lazy-loaded images (common pattern)
+					|| attributes.match(/(?:^|\s)data-src=["']([^"']+)["']/i)?.[1];
+
+				const src = srcMatch?.startsWith("/")
+					? new URL(srcMatch, url).href
+					: srcMatch;
+
 				return {
 					index,
 					alt,
-					src: src?.startsWith("/")
-						? new URL(src, url).href
-						: src,
+					src,
 					score: searchTerms?.length
 						&& searchTerms.reduce((acc, term) => acc + (alt.toLowerCase().includes(term.toLowerCase()) ? 1000 : 0), alt.length)
 						|| alt.length,
 				};
 			})
-			.filter(({ src }) => src && src.startsWith('http') && src.match(/\.(svg|png|webp|gif|jpe?g)(\?.*)?$/i)) // Filter valid image URLs
+			// FIX 4: Remove the strict file-extension filter — many modern CDN image URLs
+			// have no extension (e.g. Cloudinary, Unsplash, imgix, Shopify CDN).
+			// Instead, just filter out obviously non-image URLs and data URIs.
+			.filter(({ src }) => {
+				if (!src) return false;
+				if (!src.startsWith("http")) return false;
+				// Exclude data URIs that somehow slipped through
+				if (src.startsWith("data:")) return false;
+				// If there IS an extension in the path component, require it to be an image type
+				const pathWithoutQuery = src.split("?")[0];
+				const extMatch = pathWithoutQuery.match(/\.([a-z0-9]+)$/i);
+				if (extMatch) {
+					const ext = extMatch[1].toLowerCase();
+					const nonImageExts = ["js", "css", "html", "htm", "json", "xml", "pdf", "zip", "gz", "tar", "mp4", "mp3", "webm", "ogg", "woff", "woff2", "ttf", "eot"];
+					if (nonImageExts.includes(ext)) return false;
+				}
+				return true;
+			})
 			.sort((a, b) => b.score - a.score) // Sort by score in descending order
 			.slice(0, maxImages) // Limit number of images
 			.sort((a, b) => a.index - b.index) // Sort by original order in the body
@@ -134,10 +165,28 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 							warn(`Image ${index} is empty: ${url}`);
 							return null; // Skip empty images
 						}
-						// save the image to a file in the working directory
-						const fileExtension = /image\/([\w]+)/.exec(imageResponse.headers.get('content-type') || '')?.[1]
-							|| /\.([\w]+)(?:\?.*)$/.exec(url)?.[1] // Extract extension from URL if content type is not available
-							|| 'jpg'; // Default to jpg if no content type
+
+						// FIX 5: Derive the file extension from content-type first (most reliable),
+						// then fall back to the URL path, then default to jpg.
+						// The original code's regex could extract non-image extensions from CDN URLs
+						// that have query params like ?format=auto&w=800.
+						const contentType = imageResponse.headers.get("content-type") || "";
+						const mimeToExt: Record<string, string> = {
+							"image/jpeg": "jpg",
+							"image/jpg": "jpg",
+							"image/png": "png",
+							"image/gif": "gif",
+							"image/webp": "webp",
+							"image/svg+xml": "svg",
+							"image/avif": "avif",
+							"image/bmp": "bmp",
+							"image/tiff": "tiff",
+						};
+						const mimeKey = contentType.split(";")[0].trim().toLowerCase();
+						const fileExtension = mimeToExt[mimeKey]
+							|| /\.([a-z0-9]+)(?:\?|$)/i.exec(url.split("?")[0])?.[1]?.toLowerCase()
+							|| "jpg";
+
 						const fileName = `${timestamp}-${index}.${fileExtension}`;
 						const filePath = join(workingDirectory, fileName);
 						const localPath = filePath.replace(/\\/g, '/').replace(/^C:/, '') // Normalize path for web compatibility
