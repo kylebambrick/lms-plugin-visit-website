@@ -138,6 +138,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 					status("Fetching image URLs from website...");
 					const { body } = await fetchHTML(websiteURL, signal, warn);
 					const images = extractImages(body, websiteURL, maxImages).map(x => x[1]);
+					warn("Extracted image URLs: " + JSON.stringify(images));
 					imageURLsToDownload.push(...images);
 				}
 
@@ -260,6 +261,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 				const h3 = body.match(/<h3[^>]*>([^<]*)<\/h3>/)?.[1] || "";
 				const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
 				const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
+				warn("imagesToFetch: " + JSON.stringify(imagesToFetch));
 				const images = maxImages &&
 					(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
 					.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
