@@ -63,36 +63,37 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 			// .sort((a, b) => a.index - b.index) // Sort by original order in the body
 			.map(({ label, link }) => [label, link] as [string, string]);
 
-	const extractImages = (body:string, url:string, maxImages:number, searchTerms?:string[]) =>
-		// FIX 1: Use [\s\S] instead of . to match across newlines in attribute blocks,
-		// and make the img tag match more robust by capturing everything up to the closing >
-		[...body.matchAll(/<img\b([^>]*?)(?:\/?>)/gi)]
+	const extractImages = (body:string, url:string, maxImages:number, searchTerms?:string[], warn?:(msg:string) => void) => {
+		const allImgTags = [...body.matchAll(/<img\b([^>]*?)(?:\/?>)/gi)];
+		warn?.("Raw img tags found: " + allImgTags.length);
+		if (allImgTags.length > 0) warn?.("First img tag: " + allImgTags[0][0].substring(0, 200));
+			return allImgTags
 			.filter(x => x[1])
 			.map(([, attributes], index) => {
-				// FIX 2: Match alt= with any whitespace (including none) before it,
-				// and support both single and double quoted attribute values
-				const alt = attributes.match(/[\s]alt=["']([^"']+)["']/i)?.[1]
-					|| attributes.match(/^alt=["']([^"']+)["']/i)?.[1]
-					|| "";
+			// FIX 2: Match alt= with any whitespace (including none) before it,
+			// and support both single and double quoted attribute values
+			const alt = attributes.match(/[\s]alt=["']([^"']+)["']/i)?.[1]
+				|| attributes.match(/^alt=["']([^"']+)["']/i)?.[1]
+				|| "";
 
-				// FIX 3: Support both double and single quoted src, and allow src to be
-				// the first attribute (no leading whitespace required via alternation)
-				const srcMatch = attributes.match(/(?:^|\s)src=["']([^"']+)["']/i)?.[1]
-					// Also handle data-src for lazy-loaded images (common pattern)
-					|| attributes.match(/(?:^|\s)data-src=["']([^"']+)["']/i)?.[1];
+			// FIX 3: Support both double and single quoted src, and allow src to be
+			// the first attribute (no leading whitespace required via alternation)
+			const srcMatch = attributes.match(/(?:^|\s)src=["']([^"']+)["']/i)?.[1]
+				// Also handle data-src for lazy-loaded images (common pattern)
+				|| attributes.match(/(?:^|\s)data-src=["']([^"']+)["']/i)?.[1];
 
-				const src = srcMatch?.startsWith("/")
-					? new URL(srcMatch, url).href
-					: srcMatch;
+			const src = srcMatch?.startsWith("/")
+				? new URL(srcMatch, url).href
+				: srcMatch;
 
-				return {
-					index,
-					alt,
-					src,
-					score: searchTerms?.length
-						&& searchTerms.reduce((acc, term) => acc + (alt.toLowerCase().includes(term.toLowerCase()) ? 1000 : 0), alt.length)
-						|| alt.length,
-				};
+			return {
+				index,
+				alt,
+				src,
+				score: searchTerms?.length
+					&& searchTerms.reduce((acc, term) => acc + (alt.toLowerCase().includes(term.toLowerCase()) ? 1000 : 0), alt.length)
+					|| alt.length,
+			};
 			})
 			// FIX 4: Remove the strict file-extension filter — many modern CDN image URLs
 			// have no extension (e.g. Cloudinary, Unsplash, imgix, Shopify CDN).
@@ -116,6 +117,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 			.slice(0, maxImages) // Limit number of images
 			.sort((a, b) => a.index - b.index) // Sort by original order in the body
 			.map(({ src, alt }) => [alt, src] as [string, string]);
+	}
 
 	const viewImagesTool = tool({
 		name: "View Images",
@@ -208,8 +210,6 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 					);
 				if (downloadedImageMarkdowns.length === 0) {
 					warn('Error fetching images');
-					warn("Download results: " + JSON.stringify(downloadedImageMarkdowns));
-					warn("URLs attempted: " + JSON.stringify(imageURLsToDownload));
 					return imageURLsToDownload;
 				}
 
@@ -262,7 +262,7 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 				const links = maxLinks && extractLinks(body, url, maxLinks, searchTerms);
 				const imagesToFetch = maxImages ? extractImages(body, url, maxImages, searchTerms) : [];
 				warn("imagesToFetch: " + JSON.stringify(imagesToFetch));
-				const images = maxImages &&
+				const images = (maxImages && imagesToFetch.length > 0) &&
 					(await viewImagesTool.implementation({ imageURLs: imagesToFetch.map(x => x[1]) }, context) as string[])
 					.map((markdown, index) => [imagesToFetch[index][0], markdown] as [string, string]);
 
