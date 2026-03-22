@@ -207,6 +207,8 @@ export async function toolsProvider(ctl:ToolsProviderController):Promise<Tool[]>
 					);
 				if (downloadedImageMarkdowns.length === 0) {
 					warn('Error fetching images');
+					warn("Download results: " + JSON.stringify(downloadedImageMarkdowns));
+					warn("URLs attempted: " + JSON.stringify(imageURLsToDownload));
 					return imageURLsToDownload;
 				}
 
